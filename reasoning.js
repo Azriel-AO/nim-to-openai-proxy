@@ -11,7 +11,7 @@ if (SHOW_REASONING) console.log('[CONFIG] Reasoning display: ENABLED');
 // openai-SDK convention this proxy (raw axios) doesn't use.
 //
 // By default, reasoning is kept out of `content` and returned in a
-// structured `reasoning_content` field. Clients that want
+// structured `reasoning`/`reasoning_content` field. Clients that want
 // legacy inline <thinking> tags can opt in via `x-reasoning-format: inline`.
 
 // Models that embed reasoning inline in `content` via delimiter tags instead
@@ -109,10 +109,11 @@ class StreamNormalizer {
     if (content) normalizedDelta.content = content;
     else delete normalizedDelta.content;
 
-    // FIX: Keep reasoning_content so Janitor AI can read it
+    // Dual-emit: keep `reasoning` (what server.js gates on) AND
+    // `reasoning_content` (what Janitor AI reads).
     if (reasoning) {
+      normalizedDelta.reasoning = reasoning;
       normalizedDelta.reasoning_content = reasoning;
-      delete normalizedDelta.reasoning;
     } else {
       delete normalizedDelta.reasoning;
       delete normalizedDelta.reasoning_content;
@@ -121,8 +122,6 @@ class StreamNormalizer {
     return normalizedDelta;
   }
 
-  // NOTE: returns the un-normalized key `reasoning`. Callers that write this
-  // straight to the wire must map it to `reasoning_content` themselves.
   flush() {
     if (!this.parser) return { content: '', reasoning: '' };
     return this.parser.flush();
@@ -152,10 +151,11 @@ function normalizeNonStreamChoice(choice, model) {
   const newMessage = { ...message };
   if (content) newMessage.content = content;
 
-  // FIX: Keep reasoning_content so Janitor AI can read it
+  // Dual-emit: keep `reasoning` (what server.js gates on) AND
+  // `reasoning_content` (what Janitor AI reads).
   if (reasoning) {
+    newMessage.reasoning = reasoning;
     newMessage.reasoning_content = reasoning;
-    delete newMessage.reasoning;
   } else {
     delete newMessage.reasoning;
     delete newMessage.reasoning_content;
