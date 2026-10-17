@@ -11,7 +11,7 @@ if (SHOW_REASONING) console.log('[CONFIG] Reasoning display: ENABLED');
 // openai-SDK convention this proxy (raw axios) doesn't use.
 //
 // By default, reasoning is kept out of `content` and returned in a
-// structured `reasoning`/`reasoning_content` field. Clients that want
+// structured `reasoning_content` field. Clients that want
 // legacy inline <thinking> tags can opt in via `x-reasoning-format: inline`.
 
 // Models that embed reasoning inline in `content` via delimiter tags instead
@@ -109,13 +109,20 @@ class StreamNormalizer {
     if (content) normalizedDelta.content = content;
     else delete normalizedDelta.content;
 
-    if (reasoning) normalizedDelta.reasoning = reasoning;
-    else delete normalizedDelta.reasoning;
+    // FIX: Keep reasoning_content so Janitor AI can read it
+    if (reasoning) {
+      normalizedDelta.reasoning_content = reasoning;
+      delete normalizedDelta.reasoning;
+    } else {
+      delete normalizedDelta.reasoning;
+      delete normalizedDelta.reasoning_content;
+    }
 
-    delete normalizedDelta.reasoning_content;
     return normalizedDelta;
   }
 
+  // NOTE: returns the un-normalized key `reasoning`. Callers that write this
+  // straight to the wire must map it to `reasoning_content` themselves.
   flush() {
     if (!this.parser) return { content: '', reasoning: '' };
     return this.parser.flush();
@@ -144,8 +151,15 @@ function normalizeNonStreamChoice(choice, model) {
 
   const newMessage = { ...message };
   if (content) newMessage.content = content;
-  if (reasoning) newMessage.reasoning = reasoning;
-  delete newMessage.reasoning_content;
+
+  // FIX: Keep reasoning_content so Janitor AI can read it
+  if (reasoning) {
+    newMessage.reasoning_content = reasoning;
+    delete newMessage.reasoning;
+  } else {
+    delete newMessage.reasoning;
+    delete newMessage.reasoning_content;
+  }
 
   return { ...choice, message: newMessage };
 }
@@ -161,7 +175,9 @@ const REASONING_EFFORT_ENUMS = {
   'nvidia/nemotron-3-ultra-550b-a55b': ['low'],
   'minimaxai/minimax-m3': ['adaptive'],
   'moonshotai/kimi-k3': ['low', 'high', 'max'],
-  'meta/muse-glimmer-30b': ['none', 'minimal', 'low', 'medium', 'high', 'max']
+  'meta/muse-glimmer-30b': ['none', 'minimal', 'low', 'medium', 'high', 'max'],
+  'z-ai/glm-5.3': ['low', 'high', 'max'],
+  'z-ai/glm-5.3-flash': ['low', 'high', 'max']
 };
 
 function validReasoningEffort(model, effort) {
@@ -267,6 +283,17 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       // No off-switch — omitting the field falls back to Kimi's own 'max'.
       if (effort) return { reasoning_effort: effort };
       return { reasoning_effort: enableThinking ? 'high' : 'low' };
+    }
+
+    case 'z-ai/glm-5.3':
+    case 'z-ai/glm-5.3-flash': {
+      if (!enableThinking) return { chat_template_kwargs: { enable_thinking: false } };
+      return {
+        chat_template_kwargs: {
+          enable_thinking: true,
+          reasoning_effort: effort || 'high' // Defaults to 'high' (not 'max') for better speed
+        }
+      };
     }
 
     default:
