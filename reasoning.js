@@ -79,6 +79,7 @@ class DelimiterParser {
     return { content, reasoning };
   }
 }
+
 class StreamNormalizer {
   constructor(model) {
     this.model = model;
@@ -119,6 +120,7 @@ class StreamNormalizer {
     return this.parser.flush();
   }
 }
+
 function normalizeNonStreamChoice(choice, model) {
   if (!choice) return choice;
   const message = choice.message || {};
@@ -152,6 +154,7 @@ function normalizeNonStreamChoice(choice, model) {
 
   return { ...choice, message: newMessage };
 }
+
 // Valid reasoning_effort values per model, where NIM enforces an enum.
 // Values outside the set are dropped with a warning rather than forwarded.
 const REASONING_EFFORT_ENUMS = {
@@ -168,6 +171,7 @@ const REASONING_EFFORT_ENUMS = {
   'z-ai/glm-5.3': ['low', 'high', 'max'],
   'z-ai/glm-5.3-flash': ['low', 'high', 'max']
 };
+
 function validReasoningEffort(model, effort) {
   const allowed = REASONING_EFFORT_ENUMS[model];
   if (!allowed) return effort;
@@ -177,6 +181,7 @@ function validReasoningEffort(model, effort) {
   }
   return undefined;
 }
+
 // Resolves the client "off"/"on" override into an effective boolean. Shared
 // with callWithFallback() so both agree on whether reasoning is active.
 function resolveEffectiveThinking(enableThinking, clientReasoningEffort) {
@@ -184,10 +189,12 @@ function resolveEffectiveThinking(enableThinking, clientReasoningEffort) {
   if (clientReasoningEffort === 'on') return true;
   return enableThinking;
 }
+
 // Nemotron 3.5 Lightning has no boolean flag — only a top-level integer
 // reasoning_budget (max reasoning tokens, -1 to 32768, default 16384). This
 // tier mapping is this proxy's own approximation, not an NVIDIA-defined enum.
 const NEMOTRON_LIGHTNING_BUDGET_MAP = { low: 2048, medium: 8192, high: 16384, max: -1 };
+
 // Returns model-specific reasoning request payloads, spread into the
 // top-level request body. reasoning_effort "off"/"on" overrides
 // ENABLE_THINKING_MODE per-request for every model below.
@@ -258,7 +265,7 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
     }
 
     case 'minimaxai/minimax-m3.1-flash': {
-      if (clientReasoningEffort === 'off' || effort === 'none') {
+      if (clientReasoningEffort === 'off' || !enableThinking || effort === 'none') {
         return { reasoning_effort: 'none' };
       }
       return { reasoning_effort: effort || 'max' };
@@ -284,6 +291,7 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       return {};
   }
 }
+
 module.exports = {
   SHOW_REASONING,
   getReasoningPayload,
