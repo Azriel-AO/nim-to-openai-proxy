@@ -5,7 +5,6 @@
 
 const SHOW_REASONING = process.env.SHOW_REASONING === 'true';
 if (SHOW_REASONING) console.log('[CONFIG] Reasoning display: ENABLED');
-
 // Everything returned by getReasoningPayload() is spread into the top-level
 // JSON body sent to NIM. Do not wrap it in `extra_body` — that's an
 // openai-SDK convention this proxy (raw axios) doesn't use.
@@ -13,7 +12,6 @@ if (SHOW_REASONING) console.log('[CONFIG] Reasoning display: ENABLED');
 // By default, reasoning is kept out of `content` and returned in a
 // structured `reasoning`/`reasoning_content` field. Clients that want
 // legacy inline <thinking> tags can opt in via `x-reasoning-format: inline`.
-
 // Models that embed reasoning inline in `content` via delimiter tags instead
 // of a structured field.
 const CONTENT_DELIMITER_TAGS = {
@@ -28,7 +26,6 @@ class DelimiterParser {
     this.inThinking = false;
     this.buffer = '';
   }
-
   processChunk(chunk) {
     this.buffer += chunk;
     let content = '';
@@ -37,7 +34,6 @@ class DelimiterParser {
     while (true) {
       const targetTag = this.inThinking ? this.closeTag : this.openTag;
       const tagIndex = this.buffer.indexOf(targetTag);
-
       if (tagIndex !== -1) {
         const textBefore = this.buffer.substring(0, tagIndex);
         if (this.inThinking) {
@@ -66,7 +62,6 @@ class DelimiterParser {
         break;
       }
     }
-
     return { content, reasoning };
   }
 
@@ -84,7 +79,6 @@ class DelimiterParser {
     return { content, reasoning };
   }
 }
-
 class StreamNormalizer {
   constructor(model) {
     this.model = model;
@@ -99,7 +93,6 @@ class StreamNormalizer {
     const normalizedDelta = { ...delta };
     let reasoning = normalizedDelta.reasoning || normalizedDelta.reasoning_content || '';
     let content = normalizedDelta.content || '';
-
     if (!reasoning && content && this.parser) {
       const parsed = this.parser.processChunk(content);
       reasoning = parsed.reasoning;
@@ -108,7 +101,6 @@ class StreamNormalizer {
 
     if (content) normalizedDelta.content = content;
     else delete normalizedDelta.content;
-
     // Dual-emit: keep `reasoning` (what server.js gates on) AND
     // `reasoning_content` (what Janitor AI reads).
     if (reasoning) {
@@ -127,13 +119,11 @@ class StreamNormalizer {
     return this.parser.flush();
   }
 }
-
 function normalizeNonStreamChoice(choice, model) {
   if (!choice) return choice;
   const message = choice.message || {};
   let reasoning = message.reasoning || message.reasoning_content || '';
   let content = message.content || '';
-
   if (!reasoning && content) {
     let parser = null;
     const tags = CONTENT_DELIMITER_TAGS[model];
@@ -147,7 +137,6 @@ function normalizeNonStreamChoice(choice, model) {
       reasoning = (parsed.reasoning || '') + (flushed.reasoning || '');
     }
   }
-
   const newMessage = { ...message };
   if (content) newMessage.content = content;
 
@@ -163,7 +152,6 @@ function normalizeNonStreamChoice(choice, model) {
 
   return { ...choice, message: newMessage };
 }
-
 // Valid reasoning_effort values per model, where NIM enforces an enum.
 // Values outside the set are dropped with a warning rather than forwarded.
 const REASONING_EFFORT_ENUMS = {
@@ -174,12 +162,12 @@ const REASONING_EFFORT_ENUMS = {
   'nvidia/nemotron-3-super-120b-a12b': ['low'],
   'nvidia/nemotron-3-ultra-550b-a55b': ['low'],
   'minimaxai/minimax-m3': ['adaptive'],
+  'minimaxai/minimax-m3.1-flash': ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   'moonshotai/kimi-k3': ['low', 'high', 'max'],
   'meta/muse-glimmer-30b': ['none', 'minimal', 'low', 'medium', 'high', 'max'],
   'z-ai/glm-5.3': ['low', 'high', 'max'],
   'z-ai/glm-5.3-flash': ['low', 'high', 'max']
 };
-
 function validReasoningEffort(model, effort) {
   const allowed = REASONING_EFFORT_ENUMS[model];
   if (!allowed) return effort;
@@ -189,7 +177,6 @@ function validReasoningEffort(model, effort) {
   }
   return undefined;
 }
-
 // Resolves the client "off"/"on" override into an effective boolean. Shared
 // with callWithFallback() so both agree on whether reasoning is active.
 function resolveEffectiveThinking(enableThinking, clientReasoningEffort) {
@@ -197,18 +184,15 @@ function resolveEffectiveThinking(enableThinking, clientReasoningEffort) {
   if (clientReasoningEffort === 'on') return true;
   return enableThinking;
 }
-
 // Nemotron 3.5 Lightning has no boolean flag — only a top-level integer
 // reasoning_budget (max reasoning tokens, -1 to 32768, default 16384). This
 // tier mapping is this proxy's own approximation, not an NVIDIA-defined enum.
 const NEMOTRON_LIGHTNING_BUDGET_MAP = { low: 2048, medium: 8192, high: 16384, max: -1 };
-
 // Returns model-specific reasoning request payloads, spread into the
 // top-level request body. reasoning_effort "off"/"on" overrides
 // ENABLE_THINKING_MODE per-request for every model below.
 function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTools) {
   enableThinking = resolveEffectiveThinking(enableThinking, clientReasoningEffort);
-
   const rawEffort = (clientReasoningEffort === 'off' || clientReasoningEffort === 'on')
     ? undefined
     : clientReasoningEffort;
@@ -221,7 +205,6 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       if (effort === 'low') payload.chat_template_kwargs.low_effort = true;
       return payload;
     }
-
     case 'nvidia/nemotron-3-ultra-550b-a55b': {
       if (!enableThinking) return {};
       const payload = { chat_template_kwargs: { enable_thinking: true } };
@@ -229,12 +212,10 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       if (hasTools) payload.chat_template_kwargs.force_nonempty_content = true; // unverified
       return payload;
     }
-
     case 'nvidia/nemotron-3.5-lightning-30b-a3b': {
       if (!enableThinking) return { reasoning_budget: 0 };
       return { reasoning_budget: NEMOTRON_LIGHTNING_BUDGET_MAP[effort] ?? 16384 };
     }
-
     case 'deepseek-ai/deepseek-v4-flash-0731':
     case 'deepseek-ai/deepseek-v4-pro-0813': {
       if (!enableThinking) {
@@ -247,7 +228,6 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
         }
       };
     }
-
     case 'openai/gpt-oss-120b':
     case 'openai/gpt-oss-20b': {
       if (effort) return { reasoning_effort: effort };
@@ -262,7 +242,6 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
         include_reasoning: SHOW_REASONING
       };
     }
-
     case 'meta/muse-glimmer-30b': {
       if (effort) return { reasoning_effort: effort };
       return { reasoning_effort: enableThinking ? 'high' : 'none' };
@@ -271,7 +250,6 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
     // poolside/laguna-xs-2.1: no documented reasoning param on NIM's hosted
     // endpoint (model, messages, temperature, top_p, max_tokens, stream
     // only). Falls through to default.
-
     case 'minimaxai/minimax-m3': {
       const thinkingMode = effort === 'adaptive'
         ? 'adaptive'
@@ -279,12 +257,18 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       return { chat_template_kwargs: { thinking_mode: thinkingMode } };
     }
 
+    case 'minimaxai/minimax-m3.1-flash': {
+      if (clientReasoningEffort === 'off' || effort === 'none') {
+        return { reasoning_effort: 'none' };
+      }
+      return { reasoning_effort: effort || 'max' };
+    }
+
     case 'moonshotai/kimi-k3': {
       // No off-switch — omitting the field falls back to Kimi's own 'max'.
       if (effort) return { reasoning_effort: effort };
       return { reasoning_effort: enableThinking ? 'high' : 'low' };
     }
-
     case 'z-ai/glm-5.3':
     case 'z-ai/glm-5.3-flash': {
       if (!enableThinking) return { chat_template_kwargs: { enable_thinking: false } };
@@ -300,7 +284,6 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
       return {};
   }
 }
-
 module.exports = {
   SHOW_REASONING,
   getReasoningPayload,
