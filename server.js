@@ -7,18 +7,31 @@ const axios = require('axios');
 const https = require('https');
 const { StringDecoder } = require('string_decoder');
 const { timingSafeEqual } = require('crypto');
-const { SHOW_REASONING, getReasoningPayload, resolveEffectiveThinking, StreamNormalizer, normalizeNonStreamChoice } = require('./reasoning');
-const { extractLeakedToolCalls, ToolCallStreamRecovery } = require('./tools');
+const {
+  SHOW_REASONING,
+  getReasoningPayload,
+  resolveEffectiveThinking,
+  StreamNormalizer,
+  normalizeNonStreamChoice
+} = require('./reasoning');
+const {
+  extractLeakedToolCalls,
+  ToolCallStreamRecovery
+} = require('./tools');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── Configuration ──────────────────────────────────────────────────────
 
-const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const NIM_API_BASE =
+  process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
+
 const NIM_API_KEY = process.env.NIM_API_KEY;
 const CLIENT_AUTH_KEY = process.env.CLIENT_AUTH_KEY;
-const ENABLE_THINKING_MODE = process.env.ENABLE_THINKING_MODE === 'true';
+const ENABLE_THINKING_MODE =
+  process.env.ENABLE_THINKING_MODE === 'true';
+
 const SKIP_VALIDATION = process.env.SKIP_VALIDATION === 'true';
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
@@ -39,26 +52,47 @@ const nim = axios.create({
   httpsAgent: keepAliveAgent
 });
 
-// Per-attempt timeout before falling back to the next model. Reasoning
-// models get a longer window since thinking delays first-token latency.
+// Per-attempt timeout before falling back to the next model.
+// Reasoning models get a longer window since thinking delays first-token latency.
 // Check these against your platform's own request duration limit.
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS) || 180000;
-const REASONING_REQUEST_TIMEOUT_MS = Number(process.env.REASONING_REQUEST_TIMEOUT_MS) || 480000;
+const REQUEST_TIMEOUT_MS =
+  Number(process.env.REQUEST_TIMEOUT_MS) || 180000;
+
+const REASONING_REQUEST_TIMEOUT_MS =
+  Number(process.env.REASONING_REQUEST_TIMEOUT_MS) || 480000;
+
 const VALIDATION_TIMEOUT_MS = 15000;
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
-if (ENABLE_THINKING_MODE) console.log('[CONFIG] Thinking mode: ENABLED');
-if (DEBUG_MODE) console.log('[CONFIG] Debug mode: ENABLED (verbose reasoning + fallback logging)');
+if (ENABLE_THINKING_MODE) {
+  console.log('[CONFIG] Thinking mode: ENABLED');
+}
+
+if (DEBUG_MODE) {
+  console.log(
+    '[CONFIG] Debug mode: ENABLED (verbose reasoning + fallback logging)'
+  );
+}
 
 // ─── Config validation ──────────────────────────────────────────────────
 
 function validateConfig() {
-  const fatal = (msg) => { console.error(`[FATAL] ${msg}`); process.exit(1); };
-  if (!NIM_API_KEY) fatal('NIM_API_KEY is required. Get one at https://build.nvidia.com/');
+  const fatal = (msg) => {
+    console.error(`[FATAL] ${msg}`);
+    process.exit(1);
+  };
+
+  if (!NIM_API_KEY) {
+    fatal('NIM_API_KEY is required. Get one at https://build.nvidia.com/');
+  }
+
   if (!CLIENT_AUTH_KEY) {
-    console.warn('[WARN] CLIENT_AUTH_KEY not set. All requests will be rejected with 403.');
+    console.warn(
+      '[WARN] CLIENT_AUTH_KEY not set. All requests will be rejected with 403.'
+    );
   }
 }
+
 validateConfig();
 
 // ─── Model Mapping ───────────────────────────────────────────────────────
@@ -88,7 +122,8 @@ const MODEL_MAPPING = {
   'google-light': 'google/gemma-4-31b-it',
   'google-lightest': 'meta/muse-glimmer-30b', // was google/gemma-2b
   'google-lighter': 'poolside/laguna-xs-2.1', // was google/gemma-3-4b-it
-  'm3': 'minimaxai/minimax-m3'
+  'm3': 'minimaxai/minimax-m3',
+  'm3.1-flash': 'minimaxai/minimax-m3.1-flash'
 };
 
 // Used when an unrecognized alias is requested. Must point at a live model.
@@ -101,6 +136,15 @@ const FALLBACK_MODELS = [
   'mistralai/mistral-nemotron',
   'nvidia/nemotron-3-super-120b-a12b'
 ];
+
+// MiniMax M3.1 Flash supports these reasoning-effort values.
+const MINIMAX_M31_FLASH_EFFORTS = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]);
 
 // ─── Middleware ─────────────────────────────────────────────────────────
 
@@ -118,19 +162,30 @@ app.use((err, req, res, next) => {
       }
     });
   }
+
   next(err);
 });
 
 function extractBearerToken(authHeader) {
-  if (!authHeader || typeof authHeader !== 'string') return null;
+  if (!authHeader || typeof authHeader !== 'string') {
+    return null;
+  }
+
   const trimmed = authHeader.trim();
-  if (!trimmed.startsWith('Bearer ')) return null;
+
+  if (!trimmed.startsWith('Bearer ')) {
+    return null;
+  }
+
   const token = trimmed.slice('Bearer '.length).trim();
   return token || null;
 }
 
 function safeTimingEqual(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
+  if (!a || !b || a.length !== b.length) {
+    return false;
+  }
+
   try {
     return timingSafeEqual(Buffer.from(a), Buffer.from(b));
   } catch {
@@ -139,11 +194,16 @@ function safeTimingEqual(a, b) {
 }
 
 app.use((req, res, next) => {
-  if (req.path === '/health' || req.path === '/v1/models' || req.path === '/') {
+  if (
+    req.path === '/health' ||
+    req.path === '/v1/models' ||
+    req.path === '/'
+  ) {
     return next();
   }
 
   const token = extractBearerToken(req.headers.authorization);
+
   if (!token || !CLIENT_AUTH_KEY) {
     return res.status(403).json({
       error: {
@@ -189,16 +249,25 @@ async function validateModels() {
   }
 
   console.log('[VALIDATION] Checking model availability via /v1/models...');
+
   try {
     const availableModels = await fetchLiveModelIds();
 
     const invalid = [];
+
     for (const [alias, nimId] of Object.entries(MODEL_MAPPING)) {
       if (availableModels.has(nimId)) {
         console.log(`[VALIDATION] ✓ ${alias} → ${nimId}`);
       } else {
-        console.warn(`[VALIDATION] ✗ ${alias} → ${nimId} (not in catalog)`);
-        invalid.push({ alias, nimId, error: 'Model not found in NIM catalog' });
+        console.warn(
+          `[VALIDATION] ✗ ${alias} → ${nimId} (not in catalog)`
+        );
+
+        invalid.push({
+          alias,
+          nimId,
+          error: 'Model not found in NIM catalog'
+        });
       }
     }
 
@@ -208,13 +277,20 @@ async function validateModels() {
       console.log('[VALIDATION] All models valid.');
     }
   } catch (err) {
-    console.warn(`[VALIDATION] /v1/models endpoint failed: ${err.message}. Skipping validation.`);
-    console.warn('[VALIDATION] Set SKIP_VALIDATION=true if your NIM provider lacks a model listing endpoint.');
+    console.warn(
+      `[VALIDATION] /v1/models endpoint failed: ${err.message}. Skipping validation.`
+    );
+
+    console.warn(
+      '[VALIDATION] Set SKIP_VALIDATION=true if your NIM provider lacks a model listing endpoint.'
+    );
   }
 }
 
 async function sendDiscordAlert(invalidModels) {
-  if (!DISCORD_WEBHOOK_URL) return;
+  if (!DISCORD_WEBHOOK_URL) {
+    return;
+  }
 
   const embed = {
     title: '⚠️ NIM Proxy: Model Validation Failed',
@@ -229,10 +305,15 @@ async function sendDiscordAlert(invalidModels) {
   };
 
   try {
-    await axios.post(DISCORD_WEBHOOK_URL, {
-      embeds: [embed],
-      username: 'NIM Proxy Monitor'
-    }, { timeout: 5000 });
+    await axios.post(
+      DISCORD_WEBHOOK_URL,
+      {
+        embeds: [embed],
+        username: 'NIM Proxy Monitor'
+      },
+      { timeout: 5000 }
+    );
+
     console.log('[DISCORD] Alert sent.');
   } catch (err) {
     console.error('[DISCORD] Failed to send alert:', err.message);
@@ -250,6 +331,7 @@ function safeWrite(res, data) {
   } catch (err) {
     console.warn('[STREAM] Write failed:', err.message);
   }
+
   return false;
 }
 
@@ -258,8 +340,11 @@ function safeWrite(res, data) {
 // Per-model cooldown after a 403/429, in-memory (resets on restart, not shared across instances).
 const modelCooldowns = new Map(); // model -> timestamp (ms) until which to skip it
 
-const RATE_LIMIT_COOLDOWN_MS = Number(process.env.RATE_LIMIT_COOLDOWN_MS) || 30000;
-const ACCESS_DENIED_COOLDOWN_MS = Number(process.env.ACCESS_DENIED_COOLDOWN_MS) || 300000;
+const RATE_LIMIT_COOLDOWN_MS =
+  Number(process.env.RATE_LIMIT_COOLDOWN_MS) || 30000;
+
+const ACCESS_DENIED_COOLDOWN_MS =
+  Number(process.env.ACCESS_DENIED_COOLDOWN_MS) || 300000;
 
 function isInCooldown(model) {
   const until = modelCooldowns.get(model);
@@ -270,22 +355,88 @@ function setCooldown(model, ms) {
   modelCooldowns.set(model, Date.now() + ms);
 }
 
-async function callWithFallback(baseRequest, models, enableThinking, clientReasoningEffort, hasTools) {
+async function callWithFallback(
+  baseRequest,
+  models,
+  enableThinking,
+  clientReasoningEffort,
+  hasTools
+) {
   let lastError = null;
-  const timeoutMs = resolveEffectiveThinking(enableThinking, clientReasoningEffort)
-    ? REASONING_REQUEST_TIMEOUT_MS
-    : REQUEST_TIMEOUT_MS;
 
   // Skip cooling-down models; fall back to the full list if that empties the chain.
   const activeModels = models.filter(m => !isInCooldown(m));
   const attemptOrder = activeModels.length > 0 ? activeModels : models;
 
   for (const model of attemptOrder) {
-    const reasoningPayload = getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTools);
-    const fullRequest = { ...baseRequest, model, ...reasoningPayload };
+    const isMiniMaxM31Flash =
+      model === 'minimaxai/minimax-m3.1-flash';
+
+    let reasoningPayload;
+    let timeoutMs;
+
+    if (isMiniMaxM31Flash) {
+      // MiniMax M3.1 Flash defaults to maximum reasoning independently
+      // of ENABLE_THINKING_MODE.
+      //
+      // Explicit valid effort values are preserved. The API's "none"
+      // value is used to honor explicit requests to disable reasoning.
+      const requestedEffort =
+        typeof clientReasoningEffort === 'string'
+          ? clientReasoningEffort.trim().toLowerCase()
+          : '';
+
+      if (
+        requestedEffort === 'none' ||
+        requestedEffort === 'off' ||
+        requestedEffort === 'disabled'
+      ) {
+        reasoningPayload = {
+          reasoning_effort: 'none'
+        };
+
+        timeoutMs = REQUEST_TIMEOUT_MS;
+      } else {
+        const selectedEffort =
+          MINIMAX_M31_FLASH_EFFORTS.has(requestedEffort)
+            ? requestedEffort
+            : 'max';
+
+        reasoningPayload = {
+          reasoning_effort: selectedEffort
+        };
+
+        timeoutMs = REASONING_REQUEST_TIMEOUT_MS;
+      }
+    } else {
+      // Existing reasoning behavior for every other model is unchanged.
+      reasoningPayload = getReasoningPayload(
+        model,
+        enableThinking,
+        clientReasoningEffort,
+        hasTools
+      );
+
+      timeoutMs = resolveEffectiveThinking(
+        enableThinking,
+        clientReasoningEffort
+      )
+        ? REASONING_REQUEST_TIMEOUT_MS
+        : REQUEST_TIMEOUT_MS;
+    }
+
+    const fullRequest = {
+      ...baseRequest,
+      model,
+      ...reasoningPayload
+    };
 
     if (DEBUG_MODE) {
-      console.log(`[DEBUG] Attempting ${model} with reasoning payload:`, JSON.stringify(reasoningPayload), `(timeout: ${timeoutMs}ms)`);
+      console.log(
+        `[DEBUG] Attempting ${model} with reasoning payload:`,
+        JSON.stringify(reasoningPayload),
+        `(timeout: ${timeoutMs}ms)`
+      );
     }
 
     try {
@@ -301,7 +452,11 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
           timeout: timeoutMs
         }
       );
-      return { response: res, model };
+
+      return {
+        response: res,
+        model
+      };
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
@@ -311,9 +466,17 @@ async function callWithFallback(baseRequest, models, enableThinking, clientReaso
         status,
         err.response?.data?.error?.message || err.message
       );
+
       if (DEBUG_MODE) {
-        console.log(`[DEBUG] Full request body sent to ${model}:`, JSON.stringify(fullRequest));
-        console.log(`[DEBUG] Full upstream error response:`, JSON.stringify(err.response?.data || null));
+        console.log(
+          `[DEBUG] Full request body sent to ${model}:`,
+          JSON.stringify(fullRequest)
+        );
+
+        console.log(
+          `[DEBUG] Full upstream error response:`,
+          JSON.stringify(err.response?.data || null)
+        );
       }
 
       // Same key for every attempt: a 401 means every remaining model would fail identically.
@@ -383,7 +546,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '2.6.0' });
+  res.json({
+    status: 'ok',
+    version: '2.6.0'
+  });
 });
 
 app.get('/v1/models', async (req, res) => {
@@ -402,6 +568,7 @@ app.get('/v1/models', async (req, res) => {
   // Cross-checks every alias against NIM's live catalog on demand.
   try {
     const availableModels = await fetchLiveModelIds();
+
     const data = Object.entries(MODEL_MAPPING).map(([id, backend]) => ({
       id,
       object: 'model',
@@ -416,11 +583,14 @@ app.get('/v1/models', async (req, res) => {
       data,
       live_check: {
         checked_at: new Date().toISOString(),
-        unavailable_aliases: data.filter(m => !m.available).map(m => m.id)
+        unavailable_aliases: data
+          .filter(m => !m.available)
+          .map(m => m.id)
       }
     });
   } catch (err) {
     console.warn(`[MODELS] Live check failed: ${err.message}`);
+
     res.status(502).json({
       error: {
         message: `Live model check against NIM failed: ${err.message}`,
@@ -436,20 +606,36 @@ app.post('/v1/chat/completions', async (req, res) => {
   let upstreamStream = null;
 
   try {
-    const { model, max_tokens, temperature, stream, reasoning_effort } = req.body;
+    const {
+      model,
+      max_tokens,
+      temperature,
+      stream,
+      reasoning_effort
+    } = req.body;
 
     let primaryModel = MODEL_MAPPING[model];
+
     if (!primaryModel) {
-      console.warn(`[PROXY] Unknown model alias "${model}", falling back to default: ${DEFAULT_MODEL}`);
+      console.warn(
+        `[PROXY] Unknown model alias "${model}", falling back to default: ${DEFAULT_MODEL}`
+      );
+
       primaryModel = DEFAULT_MODEL;
     }
 
     // De-dupe: avoids retrying the same model twice if it's also in FALLBACK_MODELS.
-    const modelChain = [...new Set([primaryModel, ...FALLBACK_MODELS])];
+    const modelChain = [
+      ...new Set([primaryModel, ...FALLBACK_MODELS])
+    ];
 
     // Forward all client fields except model (replaced per-attempt) and
     // reasoning_effort (translated per-model by getReasoningPayload).
-    const { model: _droppedModel, reasoning_effort: _droppedReasoningEffort, ...forwardedFields } = req.body;
+    const {
+      model: _droppedModel,
+      reasoning_effort: _droppedReasoningEffort,
+      ...forwardedFields
+    } = req.body;
 
     const baseRequest = {
       ...forwardedFields,
@@ -458,7 +644,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
 
-    const { response, model: usedModel } = await callWithFallback(
+    const {
+      response,
+      model: usedModel
+    } = await callWithFallback(
       baseRequest,
       modelChain,
       ENABLE_THINKING_MODE,
@@ -469,7 +658,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     upstreamStream = response.data;
     console.log('[PROXY] Model used:', usedModel);
 
-    const inlineReasoning = req.headers['x-reasoning-format'] === 'inline';
+    const inlineReasoning =
+      req.headers['x-reasoning-format'] === 'inline';
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -481,20 +671,28 @@ app.post('/v1/chat/completions', async (req, res) => {
       let reasoningOpen = false;
       let doneSent = false;
       let cleanedUp = false;
+
       const normalizer = new StreamNormalizer(usedModel);
       const toolRecovery = new ToolCallStreamRecovery();
 
       const cleanup = () => {
-        if (cleanedUp) return;
+        if (cleanedUp) {
+          return;
+        }
+
         cleanedUp = true;
+
         if (upstreamStream) {
           upstreamStream.removeAllListeners();
         }
+
         req.removeAllListeners('close');
       };
 
       const processLine = (line) => {
-        if (!line.startsWith('data: ')) return;
+        if (!line.startsWith('data: ')) {
+          return;
+        }
 
         // Exact match avoids false-positiving on model output that happens
         // to contain the literal substring "[DONE]".
@@ -503,6 +701,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             safeWrite(res, 'data: [DONE]\n\n');
             doneSent = true;
           }
+
           streamEndedCleanly = true;
           return;
         }
@@ -533,11 +732,19 @@ app.post('/v1/chat/completions', async (req, res) => {
               clientContent = normalizedDelta.content || '';
             }
 
-            const { content: recoveredContent, toolCallDeltas } = toolRecovery.process(clientContent);
+            const {
+              content: recoveredContent,
+              toolCallDeltas
+            } = toolRecovery.process(clientContent);
+
             clientContent = recoveredContent;
+
             if (toolCallDeltas.length > 0) {
               delta.tool_calls = toolCallDeltas;
-              if (data.choices[0]) data.choices[0].finish_reason = 'tool_calls';
+
+              if (data.choices[0]) {
+                data.choices[0].finish_reason = 'tool_calls';
+              }
             }
 
             delta.content = clientContent;
@@ -553,14 +760,21 @@ app.post('/v1/chat/completions', async (req, res) => {
 
           safeWrite(res, `data: ${JSON.stringify(data)}\n\n`);
         } catch {
-          console.warn('[STREAM] Invalid JSON line:', line.slice(0, 100));
-          safeWrite(res, `data: ${JSON.stringify({
-            error: {
-              message: 'Upstream sent malformed chunk',
-              type: 'stream_parse_error',
-              details: line.slice(0, 100)
-            }
-          })}\n\n`);
+          console.warn(
+            '[STREAM] Invalid JSON line:',
+            line.slice(0, 100)
+          );
+
+          safeWrite(
+            res,
+            `data: ${JSON.stringify({
+              error: {
+                message: 'Upstream sent malformed chunk',
+                type: 'stream_parse_error',
+                details: line.slice(0, 100)
+              }
+            })}\n\n`
+          );
         }
       };
 
@@ -569,12 +783,17 @@ app.post('/v1/chat/completions', async (req, res) => {
 
         if (buffer.length > MAX_BUFFER_SIZE) {
           console.error('[STREAM] Buffer overflow, destroying connection');
-          safeWrite(res, `data: ${JSON.stringify({
-            error: {
-              message: 'Stream buffer overflow',
-              type: 'stream_error'
-            }
-          })}\n\n`);
+
+          safeWrite(
+            res,
+            `data: ${JSON.stringify({
+              error: {
+                message: 'Stream buffer overflow',
+                type: 'stream_error'
+              }
+            })}\n\n`
+          );
+
           safeWrite(res, 'data: [DONE]\n\n');
           res.end();
           upstreamStream.destroy();
@@ -584,6 +803,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
+
         for (const line of lines) {
           processLine(line);
         }
@@ -591,6 +811,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       upstreamStream.on('end', () => {
         buffer += decoder.end();
+
         if (buffer.trim()) {
           for (const line of buffer.split('\n')) {
             processLine(line);
@@ -600,9 +821,14 @@ app.post('/v1/chat/completions', async (req, res) => {
         const flushedDelta = normalizer.flush();
 
         const toolRecoveryLeftover = toolRecovery.flush();
+
         if (toolRecoveryLeftover) {
-          console.warn('[TOOL_CALL_RECOVERY] Stream ended mid <tool_call> tag; flushing raw text instead of dropping it.');
-          flushedDelta.content = (flushedDelta.content || '') + toolRecoveryLeftover;
+          console.warn(
+            '[TOOL_CALL_RECOVERY] Stream ended mid <tool_call> tag; flushing raw text instead of dropping it.'
+          );
+
+          flushedDelta.content =
+            (flushedDelta.content || '') + toolRecoveryLeftover;
         }
 
         if (flushedDelta.content || flushedDelta.reasoning) {
@@ -626,58 +852,101 @@ app.post('/v1/chat/completions', async (req, res) => {
             clientContent = flushedDelta.content || '';
           }
 
-          const finalChunk = { choices: [{ delta: {} }] };
-          if (clientContent) finalChunk.choices[0].delta.content = clientContent;
+          const finalChunk = {
+            choices: [{ delta: {} }]
+          };
 
-          if (SHOW_REASONING && !inlineReasoning && flushedDelta.reasoning) {
-            finalChunk.choices[0].delta.reasoning = flushedDelta.reasoning;
-            finalChunk.choices[0].delta.reasoning_content = flushedDelta.reasoning;
+          if (clientContent) {
+            finalChunk.choices[0].delta.content = clientContent;
+          }
+
+          if (
+            SHOW_REASONING &&
+            !inlineReasoning &&
+            flushedDelta.reasoning
+          ) {
+            finalChunk.choices[0].delta.reasoning =
+              flushedDelta.reasoning;
+
+            finalChunk.choices[0].delta.reasoning_content =
+              flushedDelta.reasoning;
           }
 
           if (Object.keys(finalChunk.choices[0].delta).length > 0) {
-            safeWrite(res, `data: ${JSON.stringify(finalChunk)}\n\n`);
+            safeWrite(
+              res,
+              `data: ${JSON.stringify(finalChunk)}\n\n`
+            );
           }
         }
 
         // Close an inline <thinking> tag left open if the model was cut off mid-reasoning.
         if (SHOW_REASONING && inlineReasoning && reasoningOpen) {
-          safeWrite(res, `data: ${JSON.stringify({ choices: [{ delta: { content: '\n</thinking>\n' } }] })}\n\n`);
+          safeWrite(
+            res,
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    content: '\n</thinking>\n'
+                  }
+                }
+              ]
+            })}\n\n`
+          );
+
           reasoningOpen = false;
         }
 
         if (!doneSent) {
           safeWrite(res, 'data: [DONE]\n\n');
         }
+
         streamEndedCleanly = true;
+
         if (!res.writableEnded) {
           res.end();
         }
+
         cleanup();
       });
 
       upstreamStream.on('error', err => {
         console.error('[STREAM] Upstream error:', err.message);
+
         if (!res.writableEnded) {
-          safeWrite(res, `data: ${JSON.stringify({
-            error: {
-              message: 'Stream interrupted by upstream error',
-              type: 'stream_error'
-            }
-          })}\n\n`);
+          safeWrite(
+            res,
+            `data: ${JSON.stringify({
+              error: {
+                message: 'Stream interrupted by upstream error',
+                type: 'stream_error'
+              }
+            })}\n\n`
+          );
+
           safeWrite(res, 'data: [DONE]\n\n');
           res.end();
         }
+
         cleanup();
       });
 
       req.on('close', () => {
         const clientGone = req.destroyed || !res.writable;
+
         if (!streamEndedCleanly && clientGone) {
           console.warn('[STREAM] Client disconnected prematurely');
         }
-        if (upstreamStream && !upstreamStream.destroyed && !streamEndedCleanly) {
+
+        if (
+          upstreamStream &&
+          !upstreamStream.destroyed &&
+          !streamEndedCleanly
+        ) {
           upstreamStream.destroy();
         }
+
         cleanup();
       });
     } else {
@@ -686,25 +955,39 @@ app.post('/v1/chat/completions', async (req, res) => {
         object: 'chat.completion',
         model: usedModel, // actual model that answered, may differ from the requested alias
         created: Math.floor(Date.now() / 1000),
-        choices: (response.data.choices || []).map((choice, i) => {
-          const normalizedChoice = normalizeNonStreamChoice(choice, usedModel);
-          let content = normalizedChoice.message?.content || '';
-          const reasoning = normalizedChoice.message?.reasoning || '';
 
-          const { content: cleanedContent, toolCalls: recoveredToolCalls } = extractLeakedToolCalls(content);
+        choices: (response.data.choices || []).map((choice, i) => {
+          const normalizedChoice =
+            normalizeNonStreamChoice(choice, usedModel);
+
+          let content = normalizedChoice.message?.content || '';
+
+          const reasoning =
+            normalizedChoice.message?.reasoning || '';
+
+          const {
+            content: cleanedContent,
+            toolCalls: recoveredToolCalls
+          } = extractLeakedToolCalls(content);
+
           content = cleanedContent;
 
           if (SHOW_REASONING && inlineReasoning && reasoning) {
-            content = `<thinking>\n${reasoning}\n</thinking>\n\n${content}`;
+            content =
+              `<thinking>\n${reasoning}\n</thinking>\n\n${content}`;
           }
 
-          const finalMessage = { ...normalizedChoice.message, content };
+          const finalMessage = {
+            ...normalizedChoice.message,
+            content
+          };
 
           if (recoveredToolCalls.length > 0) {
             finalMessage.tool_calls = [
               ...(normalizedChoice.message?.tool_calls || []),
               ...recoveredToolCalls
             ];
+
             // null content on tool-call turns matches real OpenAI responses
             if (!finalMessage.content || !finalMessage.content.trim()) {
               finalMessage.content = null;
@@ -723,10 +1006,14 @@ app.post('/v1/chat/completions', async (req, res) => {
             ...normalizedChoice,
             index: i,
             message: finalMessage,
-            ...(recoveredToolCalls.length > 0 && { finish_reason: 'tool_calls' })
+            ...(recoveredToolCalls.length > 0 && {
+              finish_reason: 'tool_calls'
+            })
           };
+
           return finalChoice;
         }),
+
         usage: response.data.usage || {
           prompt_tokens: 0,
           completion_tokens: 0,
@@ -744,6 +1031,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       // Express only sets Content-Type if unset; force JSON in case the
       // streaming branch already set text/event-stream before failing.
       res.set('Content-Type', 'application/json');
+
       res.status(error.response?.status || 500).json({
         error: {
           message: error.message,
@@ -752,12 +1040,16 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       });
     } else if (!res.writableEnded) {
-      safeWrite(res, `data: ${JSON.stringify({
-        error: {
-          message: error.message,
-          type: 'proxy_error'
-        }
-      })}\n\n`);
+      safeWrite(
+        res,
+        `data: ${JSON.stringify({
+          error: {
+            message: error.message,
+            type: 'proxy_error'
+          }
+        })}\n\n`
+      );
+
       safeWrite(res, 'data: [DONE]\n\n');
       res.end();
     }
@@ -783,6 +1075,7 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`[PROXY] Hybrid proxy running on port ${PORT}`);
   console.log(`[PROXY] Max tokens limit: ${MAX_TOKENS_LIMIT}`);
+
   validateModels().catch(err => {
     console.error('[VALIDATION] Startup check failed:', err.message);
   });
